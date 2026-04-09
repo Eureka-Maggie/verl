@@ -251,7 +251,7 @@ class vLLMHttpServer:
             "max_num_batched_tokens": self.config.max_num_batched_tokens,
             "enable_prefix_caching": self.config.enable_prefix_caching,
             "enable_sleep_mode": self.config.enable_sleep_mode,
-            "logprobs_mode": self.config.logprobs_mode,
+            "logprobs_mode": self.config.logprobs_mode if _VLLM_VERSION >= version.parse("0.11.0") else None,
             "enforce_eager": self.config.enforce_eager,
             "gpu_memory_utilization": self.config.gpu_memory_utilization,
             "disable_log_stats": self.config.disable_log_stats,
@@ -601,7 +601,9 @@ class vLLMHttpServer:
         self.global_steps = global_steps
 
     async def wait_for_requests_to_drain(self):
-        await self.engine.wait_for_requests_to_drain()
+        if hasattr(self.engine, "wait_for_requests_to_drain"):
+            await self.engine.wait_for_requests_to_drain()
+
 
     async def abort_all_requests(self, reset_prefix_cache: bool = True) -> dict[str, Any]:
         """Abort all ongoing generation requests.
