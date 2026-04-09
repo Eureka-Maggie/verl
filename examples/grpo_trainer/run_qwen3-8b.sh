@@ -13,7 +13,7 @@ python3 -m verl.trainer.main_ppo \
     data.train_files="/primus_xpfs_workspace_T04/txy/data/DAPO-Math-17k/data/dapo-math-17k.parquet" \
     data.val_files="/primus_xpfs_workspace_T04/txy/data/AIME-24/data/aime-2024.parquet" \
     data.train_batch_size=512 \
-    data.max_prompt_length=512 \
+    data.max_prompt_length=2048 \
     data.max_response_length=8192 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
@@ -39,7 +39,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger='["console","wandb"]' \
-    trainer.project_name='verl_grpo_example_gsm8k' \
+    trainer.project_name='rubric' \
     trainer.experiment_name='qwen3_8b_grpo' \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
