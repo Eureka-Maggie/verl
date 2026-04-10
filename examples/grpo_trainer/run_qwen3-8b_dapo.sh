@@ -24,15 +24,15 @@ clip_ratio_low=0.2
 clip_ratio_high=0.2
 
 max_prompt_length=$((1024 * 2))
-max_response_length=$((1024 * 8))
+max_response_length=$((1024 * 4))
 enable_overlong_buffer=True
-overlong_buffer_len=$((1024 * 4))
+overlong_buffer_len=$((1024 * 3))
 overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 loss_mode=geo_mean
 
-train_prompt_bsz=512
+train_prompt_bsz=256
 n_resp_per_prompt=16
 train_prompt_mini_bsz=32
 
@@ -41,8 +41,8 @@ NGPUS_PER_NODE=8
 
 MODEL_PATH="/primus_xpfs_workspace_T04/txy/models/Qwen3-8B"
 CKPTS_DIR="${HOME}/checkpoints/${project_name}/${exp_name}"
-TRAIN_FILE="/primus_xpfs_workspace_T04/txy/data/DAPO-Math-17k/data/dapo-math-17k.parquet"
-TEST_FILE="/primus_xpfs_workspace_T04/txy/data/AIME-24/data/aime-2024.parquet"
+TRAIN_FILE="/primus_xpfs_workspace_T04/txy/data/DAPO-Math-17k/train.parquet"
+TEST_FILE="/primus_xpfs_workspace_T04/txy/data/AIME24/dev.parquet"
 
 # Algorithm
 temperature=1.0
