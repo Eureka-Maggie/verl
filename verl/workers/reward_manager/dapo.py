@@ -91,6 +91,11 @@ class DAPORewardManager(AbstractRewardManager):
 
             ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
 
+            print(f"[dapo] ===== sample {i} =====")
+            print(f"[dapo] prompt_str:\n{prompt_str}")
+            print(f"[dapo] response_str:\n{response_str}")
+            print(f"[dapo] ground_truth={ground_truth!r}")
+
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
 
             extra_info = data_item.non_tensor_batch.get("extra_info", {})

@@ -212,7 +212,7 @@ def is_correct_strict_box(
 
     # Extract and check the boxed answer
     boxed_pred = last_boxed_only_string(pred)
-    extracted_pred = remove_boxed(boxed_pred) if boxed_pred is not None else None
+    extracted_pred = remove_boxed(boxed_pred) if boxed_pred is not None else "[INVALID]"
 
     return 1 if (extracted_pred == gt) else -1, extracted_pred
 
@@ -264,6 +264,10 @@ def compute_score(
 
     reward = 1.0 if correct else -1.0
     acc = correct
+
+    print(f"[math_dapo] solution_str={solution_str!r}")
+    print(f"[math_dapo] ground_truth={ground_truth!r}")
+    print(f"[math_dapo] pred={pred!r}, correct={correct}, reward={reward}")
 
     return {
         "score": reward,

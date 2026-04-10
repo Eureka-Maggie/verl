@@ -21,19 +21,25 @@ use_kl_loss=False
 kl_loss_coef=0.0
 
 clip_ratio_low=0.2
-clip_ratio_high=0.2
+clip_ratio_high=0.28
 
 max_prompt_length=$((1024 * 2))
 max_response_length=$((1024 * 4))
 enable_overlong_buffer=True
-overlong_buffer_len=$((1024 * 3))
+overlong_buffer_len=$((1024))
 overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
-loss_mode=geo_mean
 
-train_prompt_bsz=256
-n_resp_per_prompt=16
+# train_prompt_bsz=256
+# n_resp_per_prompt=8
+# train_prompt_mini_bsz=32
+enable_filter_groups=True
+filter_groups_metric=acc
+max_num_gen_batches=10
+train_prompt_bsz=64
+gen_prompt_bsz=$((train_prompt_bsz * 3))
+n_resp_per_prompt=8
 train_prompt_mini_bsz=32
 
 NNODES=1
@@ -51,14 +57,14 @@ top_k=-1
 val_top_p=0.7
 
 # Performance
-sp_size=1
+sp_size=2
 use_dynamic_bsz=True
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3))
 offload=True
-gen_tp=4
+gen_tp=2
 
-python3 -m verl.trainer.main_ppo \
+python3 -m recipe.dapo.main_dapo \
     data.train_files="${TRAIN_FILE}" \
     data.val_files="${TEST_FILE}" \
     data.prompt_key=prompt \
@@ -66,6 +72,7 @@ python3 -m verl.trainer.main_ppo \
     data.filter_overlong_prompts=True \
     data.max_prompt_length=${max_prompt_length} \
     data.max_response_length=${max_response_length} \
+    data.gen_batch_size=${gen_prompt_bsz} \
     data.train_batch_size=${train_prompt_bsz} \
     actor_rollout_ref.rollout.n=${n_resp_per_prompt} \
     algorithm.adv_estimator=${adv_estimator} \
@@ -73,9 +80,13 @@ python3 -m verl.trainer.main_ppo \
     algorithm.kl_ctrl.kl_coef=${kl_coef} \
     actor_rollout_ref.actor.use_kl_loss=${use_kl_loss} \
     actor_rollout_ref.actor.kl_loss_coef=${kl_loss_coef} \
-    actor_rollout_ref.actor.policy_loss.loss_mode=${loss_mode} \
+    actor_rollout_ref.actor.ulysses_sequence_parallel_size=${sp_size} \
     actor_rollout_ref.actor.clip_ratio_low=${clip_ratio_low} \
     actor_rollout_ref.actor.clip_ratio_high=${clip_ratio_high} \
+    actor_rollout_ref.actor.clip_ratio_c=10.0 \
+    algorithm.filter_groups.enable=${enable_filter_groups} \
+    algorithm.filter_groups.metric=${filter_groups_metric} \
+    algorithm.filter_groups.max_num_gen_batches=${max_num_gen_batches} \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.use_dynamic_bsz=${use_dynamic_bsz} \
     actor_rollout_ref.ref.log_prob_use_dynamic_bsz=${use_dynamic_bsz} \
@@ -109,11 +120,11 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
     reward.reward_manager.name=dapo \
-    +reward.reward_kwargs.overlong_buffer_cfg.enable=${enable_overlong_buffer} \
-    +reward.reward_kwargs.overlong_buffer_cfg.len=${overlong_buffer_len} \
-    +reward.reward_kwargs.overlong_buffer_cfg.penalty_factor=${overlong_penalty_factor} \
-    +reward.reward_kwargs.overlong_buffer_cfg.log=False \
-    +reward.reward_kwargs.max_resp_len=${max_response_length} \
+    reward.reward_kwargs.overlong_buffer_cfg.enable=${enable_overlong_buffer} \
+    reward.reward_kwargs.overlong_buffer_cfg.len=${overlong_buffer_len} \
+    reward.reward_kwargs.overlong_buffer_cfg.penalty_factor=${overlong_penalty_factor} \
+    reward.reward_kwargs.overlong_buffer_cfg.log=False \
+    reward.reward_kwargs.max_resp_len=${max_response_length} \
     trainer.logger='["console","wandb"]' \
     trainer.project_name="${project_name}" \
     trainer.experiment_name="${exp_name}" \
@@ -122,7 +133,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=${NNODES} \
     trainer.test_freq=10 \
     trainer.save_freq=10 \
-    trainer.total_epochs=10 \
+    trainer.total_epochs=60 \
     trainer.total_training_steps=3000 \
     trainer.default_local_dir="${CKPTS_DIR}" \
     trainer.resume_mode=auto \
