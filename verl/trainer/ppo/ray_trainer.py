@@ -69,6 +69,7 @@ from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+from verl.utils.convergence_detector import ConvergenceDetector
 from verl.workers.config import DistillationConfig, EngineConfig
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
 
@@ -141,7 +142,7 @@ def compute_advantage(
     num_repeat: int = 1,
     norm_adv_by_std_in_grpo: bool = True,
     config: Optional[AlgoConfig] = None,
-) -> DataProto:
+) -> tuple[DataProto, dict]:
     """Compute advantage estimates for policy optimization.
 
     This function computes advantage estimates using various estimators like GAE, GRPO, REINFORCE++, etc.
@@ -158,12 +159,14 @@ def compute_advantage(
         config (dict, optional): Configuration dictionary for algorithm settings. Defaults to None.
 
     Returns:
-        DataProto: The updated data with computed advantages and returns.
+        tuple[DataProto, dict]: The updated data with computed advantages and returns, and a dictionary
+            containing additional statistics (e.g., GRPO mean/std statistics).
     """
     # Back-compatible with trainers that do not compute response mask in fit
     if "response_mask" not in data.batch.keys():
         data.batch["response_mask"] = compute_response_mask(data)
     # prepare response group
+    adv_stats = {}
     if adv_estimator == AdvantageEstimator.GAE:
         # Compute advantages and returns using Generalized Advantage Estimation (GAE)
         advantages, returns = core_algos.compute_gae_advantage_return(
@@ -186,7 +189,7 @@ def compute_advantage(
         grpo_calculation_mask = data.batch["response_mask"]
 
         # Call compute_grpo_outcome_advantage with parameters matching its definition
-        advantages, returns = core_algos.compute_grpo_outcome_advantage(
+        advantages, returns, grpo_stats = core_algos.compute_grpo_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
             response_mask=grpo_calculation_mask,
             index=data.non_tensor_batch["uid"],
@@ -194,6 +197,7 @@ def compute_advantage(
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+        adv_stats = grpo_stats
     else:
         # handle all other adv estimator type other than GAE and GRPO
         adv_estimator_fn = core_algos.get_adv_estimator_fn(adv_estimator)
@@ -228,7 +232,7 @@ def compute_advantage(
         advantages, returns = adv_estimator_fn(**adv_kwargs)
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
-    return data
+    return data, adv_stats
 
 
 class RayPPOTrainer:
@@ -299,6 +303,53 @@ class RayPPOTrainer:
         self.validation_generations_logger = ValidationGenerationsLogger(
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
+        )
+
+        # Initialize rubric generator if enabled
+        self.rubric_generator = None
+        if self.config.trainer.get("enable_rubric_generation", False):
+            try:
+                from verl.utils.llm_client import LLMClient
+                from verl.utils.rubric_generator import RubricGenerator
+
+                rubric_config = self.config.trainer.get("rubric_generation", {})
+                rubric_template_path = rubric_config.get("template_path", "rubric/init_rubric.txt")
+                judge_template_path = rubric_config.get("judge_template_path", "rubric/judge.txt")
+                rubric_output_dir = rubric_config.get("output_dir", "rubric/")
+                num_prompts = rubric_config.get("num_prompts", 8)
+                num_rollouts_per_prompt = rubric_config.get("num_rollouts_per_prompt", 2)
+                llm_env_path = rubric_config.get("llm_env_path", None)
+
+                update_rubric_template_path = rubric_config.get("update_template_path", None)
+                num_low_var_groups = rubric_config.get("num_low_var_groups", 8)
+                judge_max_workers = rubric_config.get("judge_max_workers", 32)
+
+                llm_client = LLMClient(env_path=llm_env_path)
+                self.rubric_generator = RubricGenerator(
+                    rubric_template_path=rubric_template_path,
+                    judge_template_path=judge_template_path,
+                    output_dir=rubric_output_dir,
+                    exp_name=self.config.trainer.experiment_name,
+                    llm_client=llm_client,
+                    tokenizer=tokenizer,
+                    num_prompts=num_prompts,
+                    num_rollouts_per_prompt=num_rollouts_per_prompt,
+                    update_rubric_template_path=update_rubric_template_path,
+                    num_low_var_groups=num_low_var_groups,
+                    judge_max_workers=judge_max_workers,
+                )
+                print(f"Rubric generator initialized (rubric={rubric_template_path}, judge={judge_template_path})")
+            except Exception as e:
+                print(f"Warning: Failed to initialize rubric generator: {e}")
+                import traceback
+                traceback.print_exc()
+                self.rubric_generator = None
+
+        self.convergence_detector = ConvergenceDetector(
+            ma_window=20,
+            plateau_window=30,
+            plateau_thresh=0.02,
+            max2nd_thresh=0.05,
         )
 
         # if ref_in_actor is True, the reference policy will be actor without lora applied
@@ -1311,6 +1362,11 @@ class RayPPOTrainer:
         self._load_checkpoint()
         self.checkpoint_manager.update_weights(self.global_steps)
 
+        # After loading checkpoint: clean up rubric files generated beyond resume_step
+        # to avoid mixing rubric generation timestamps from incomplete runs.
+        if self.rubric_generator is not None and self.global_steps > 0:
+            self.rubric_generator.cleanup_future_rubrics(resume_step=self.global_steps)
+
         current_epoch = self.global_steps // len(self.train_dataloader)
 
         # perform validation before training
@@ -1440,14 +1496,43 @@ class RayPPOTrainer:
                             continue
                         images_seqlens_all.extend(multi_modal_input["images_seqlens"].tolist())
                     batch.meta_info["images_seqlens"] = images_seqlens_all
-                    with marked_timer("reward", timing_raw, color="yellow"):
-                        # compute reward model score
-                        if self.use_rm and "rm_scores" not in batch.batch.keys():
-                            batch_reward = self._compute_reward_colocate(batch)
-                            batch = batch.union(batch_reward)
 
-                        # extract reward_tensor and reward_extra_infos_dict for training
-                        reward_tensor, reward_extra_infos_dict = extract_reward(batch)
+                    # Generate rubrics at step 1 (before reward computation)
+                    if self.global_steps == 1 and self.rubric_generator is not None:
+                        try:
+                            print("\n" + "=" * 60)
+                            print("Generating rubric after first rollout...")
+                            print("=" * 60)
+                            rubric_path = self.rubric_generator.generate_rubric(
+                                batch, step=self.global_steps
+                            )
+                            if rubric_path:
+                                print(f"Rubric generated: {rubric_path}")
+                            else:
+                                print("Rubric generation returned None.")
+                        except Exception as e:
+                            import traceback
+                            print(f"Error generating rubric: {e}")
+                            traceback.print_exc()
+
+                    with marked_timer("reward", timing_raw, color="yellow"):
+                        # Use rubric-based scoring when rubrics are available
+                        if self.rubric_generator is not None:
+                            latest_rubrics = self.rubric_generator.load_latest_rubrics()
+                        else:
+                            latest_rubrics = []
+
+                        if latest_rubrics:
+                            reward_tensor = self.rubric_generator.score_batch_to_token_level_tensor(
+                                batch, latest_rubrics
+                            )
+                            reward_extra_infos_dict = {}
+                        else:
+                            # No rubrics yet — fall back to standard reward
+                            if self.use_rm and "rm_scores" not in batch.batch.keys():
+                                batch_reward = self._compute_reward_colocate(batch)
+                                batch = batch.union(batch_reward)
+                            reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 
                     # Operating Mode Selection:
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
@@ -1542,12 +1627,109 @@ class RayPPOTrainer:
                             # IS and off-policy metrics already have rollout_corr/ prefix
                             metrics.update(is_metrics)
 
+                        # log reward mean and variance before computing advantages
+                        _seq_rewards = batch.batch["token_level_rewards"].sum(-1)
+                        metrics["reward/mean"] = float(_seq_rewards.mean().item())
+                        metrics["reward/var"] = float(_seq_rewards.var().item())
+
+                        # compute group-level statistics
+                        # Move to CPU and detach to avoid memory issues; del GPU tensor immediately
+                        seq_rewards_cpu = _seq_rewards.detach().cpu().numpy()
+                        del _seq_rewards
+
+                        # Get or construct index (prompt_id for each rollout)
+                        if "index" in batch.batch:
+                            index_cpu = batch.batch["index"].cpu().numpy()
+                        else:
+                            # Manually construct index based on rollout.n
+                            rollouts_per_prompt = self.config.actor_rollout_ref.rollout.n
+                            num_samples = len(seq_rewards_cpu)
+                            index_cpu = np.arange(num_samples) // rollouts_per_prompt
+
+                        # Group rewards by prompt_id (vectorized, more efficient)
+                        id2rewards = {}
+                        for i in range(len(seq_rewards_cpu)):
+                            prompt_id = int(index_cpu[i])
+                            if prompt_id not in id2rewards:
+                                id2rewards[prompt_id] = []
+                            id2rewards[prompt_id].append(seq_rewards_cpu[i])
+
+                        group_means = []
+                        group_vars = []
+                        group_stds = []
+                        group_advantages = []  # actual advantage used in training
+                        group_max_minus_second = []  # r_max - r_second_max (for convergence monitoring)
+
+                        # Get the advantage estimator type
+                        adv_estimator = self.config.algorithm.adv_estimator
+
+                        for prompt_id, rewards in id2rewards.items():
+                            if len(rewards) < 2:
+                                continue
+
+                            rewards_array = np.array(rewards)
+                            group_mean = np.mean(rewards_array)
+                            group_var = np.var(rewards_array)
+                            group_std = np.std(rewards_array)
+
+                            group_means.append(group_mean)
+                            group_vars.append(group_var)
+                            group_stds.append(group_std)
+
+                            # Compute r_max - r_second_max (useful for convergence monitoring)
+                            sorted_rewards = np.sort(rewards_array)[::-1]
+                            r_max = sorted_rewards[0]
+                            r_second_max = sorted_rewards[1] if len(sorted_rewards) > 1 else sorted_rewards[0]
+                            group_max_minus_second.append(r_max - r_second_max)
+
+                            # Compute actual advantage based on adv_estimator
+                            if adv_estimator in ['grpo', 'grpo_vectorized']:
+                                # Standard GRPO: advantage = (score - mean) / std for all samples
+                                # We compute the average absolute advantage magnitude
+                                group_adv = np.mean(np.abs(rewards_array - group_mean) / (group_std + 1e-6))
+                                group_advantages.append(group_adv)
+                            elif adv_estimator == 'grpo_passk':
+                                # GRPO Pass@k: only best sample has advantage = r_max - r_second_max
+                                group_advantages.append(r_max - r_second_max)
+                            else:
+                                # For other estimators, use r_max - r_second_max as a proxy
+                                group_advantages.append(r_max - r_second_max)
+
+                        # record group-level metrics
+                        if group_means:
+                            metrics["reward/group_mean_avg"] = float(np.mean(group_means))
+                            metrics["reward/group_var_avg"] = float(np.mean(group_vars))
+                            metrics["reward/group_std_avg"] = float(np.mean(group_stds))
+                            metrics["reward/group_advantage_avg"] = float(np.mean(group_advantages))
+                            metrics["reward/group_advantage_std"] = float(np.std(group_advantages))
+                            metrics["reward/group_max_minus_second_avg"] = float(np.mean(group_max_minus_second))
+                            metrics["reward/num_groups"] = len(group_means)
+
+                        # batch-level distribution statistics (use CPU data to avoid GPU memory retention)
+                        batch_negative_ratio = float((seq_rewards_cpu < 0).sum() / len(seq_rewards_cpu))
+                        batch_zero_ratio = float((np.abs(seq_rewards_cpu) < 0.1).sum() / len(seq_rewards_cpu))
+                        batch_positive_ratio = float((seq_rewards_cpu > 0).sum() / len(seq_rewards_cpu))
+
+                        metrics["reward/batch_negative_ratio"] = batch_negative_ratio
+                        metrics["reward/batch_zero_ratio"] = batch_zero_ratio
+                        metrics["reward/batch_positive_ratio"] = batch_positive_ratio
+
+                        # Preserve for possible rubric update (convergence-triggered); cleared below.
+                        _seq_rewards_for_rubric = seq_rewards_cpu
+
+                        # Clean up temporary variables to reduce memory usage
+                        # These variables are only used for computing metrics above and are no longer needed
+                        del seq_rewards_cpu, index_cpu, id2rewards
+                        del group_means, group_vars, group_stds, group_advantages, group_max_minus_second
+                        # Clear GPU cache to free up fragmented memory
+                        torch.cuda.empty_cache()
+
                         # compute advantages, executed on the driver process
                         norm_adv_by_std_in_grpo = self.config.algorithm.get(
                             "norm_adv_by_std_in_grpo", True
                         )  # GRPO adv normalization factor
 
-                        batch = compute_advantage(
+                        batch, adv_stats = compute_advantage(
                             batch,
                             adv_estimator=self.config.algorithm.adv_estimator,
                             gamma=self.config.algorithm.gamma,
@@ -1556,6 +1738,11 @@ class RayPPOTrainer:
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
+
+                        # Add advantage statistics to metrics if available
+                        if adv_stats:
+                            for key, value in adv_stats.items():
+                                metrics[f"grpo/{key}"] = value
 
                     # update critic
                     if self.use_critic:
@@ -1665,6 +1852,36 @@ class RayPPOTrainer:
                 # this is experimental and may be changed/removed in the future in favor of a general-purpose one
                 if isinstance(self.train_dataloader.sampler, AbstractCurriculumSampler):
                     self.train_dataloader.sampler.update(batch=batch)
+
+                # Convergence detection: reward/mean plateau + max-2nd below threshold
+                conv_metrics = self.convergence_detector.step(
+                    reward_mean=metrics.get("reward/mean", float("nan")),
+                    max_minus_second=metrics.get("reward/group_max_minus_second_avg"),
+                    std_avg=metrics.get("reward/group_std_avg"),
+                )
+                metrics.update(conv_metrics)
+
+                # On the first step where convergence is detected, generate an updated rubric.
+                # The new rubric takes effect from the *next* step (load_latest_rubrics() will
+                # pick it up automatically).
+                if conv_metrics.get("convergence/first_trigger", 0.0) == 1.0 and self.rubric_generator is not None:
+                    try:
+                        prev_rubrics = self.rubric_generator.load_latest_rubrics()
+                        result = self.rubric_generator.update_rubric(
+                            batch=batch,
+                            prev_rubrics=prev_rubrics,
+                            step=self.global_steps,
+                            seq_rewards=_seq_rewards_for_rubric,
+                            rollout_n=self.config.actor_rollout_ref.rollout.n,
+                        )
+                        if result is not None:
+                            self.convergence_detector.reset()
+                    except Exception as _upd_exc:
+                        import traceback as _tb
+                        print(f"[RubricUpdate] Error during rubric update: {_upd_exc}")
+                        _tb.print_exc()
+
+                del _seq_rewards_for_rubric
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)

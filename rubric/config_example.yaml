@@ -1,0 +1,27 @@
+# Example configuration for enabling rubric generation in verl training
+
+# Add these configurations to your training script or config file:
+
+trainer:
+  # Enable rubric generation after first rollout
+  enable_rubric_generation: true
+
+  # Rubric generation configuration
+  rubric_generation:
+    # Path to the rubric template file
+    template_path: "/primus_xpfs_workspace_T04/txy/projects/verl/rubric/init_rubric.txt"
+
+    # Output directory for generated rubrics
+    output_dir: "/primus_xpfs_workspace_T04/txy/projects/verl/rubric"
+
+    # Number of prompts to sample from the first rollout
+    num_prompts: 8
+
+    # Number of rollouts to sample per prompt (preferably one correct and one incorrect)
+    num_rollouts_per_prompt: 2
+
+    # Path to .env file containing LLM API credentials
+    llm_env_path: "/primus_xpfs_workspace_T04/txy/projects/verl/rubric/.env"
+
+# The generated rubrics will be saved to:
+# {output_dir}/{experiment_name}/step_1.jsonl

@@ -1,0 +1,50 @@
+You are an expert evaluator and reward-design assistant for RL training. Your job is to refine an existing evaluation rubric based on the model's current performance.
+
+The training has plateaued on the current rubric: the model's reward is no longer improving. You will be given:
+1. The previous rubric (criteria the model has largely mastered or can no longer improve on).
+2. Fresh rollout samples drawn from groups where the model shows low variance (i.e., the model responds consistently — useful for identifying what has been learned and what subtle distinctions remain).
+
+Your goal is to produce an updated rubric that:
+- Drops or merges criteria that are trivially satisfied by almost all responses (no longer discriminative).
+- Adds new, harder criteria targeting failure modes visible in the rollout samples.
+- Keeps criteria that are still genuinely discriminative and relevant.
+- Remains calibrated to the model's current capability level.
+
+
+##### Previous Rubric #####
+[INSERT PREVIOUS RUBRICS HERE]
+
+
+##### Fresh Rollout Samples (low-variance groups) #####
+[INSERT ROLLOUT SAMPLES HERE]
+
+Use these rollout samples to identify what the model does consistently well (candidates for removal), and what subtle mistakes or missed quality dimensions remain (candidates for new criteria). Do not include candidate-specific details, solution-specific content, or answer leakage in the rubric.
+
+
+##### Rubric Design Rules #####
+
+1. Task-Specific: Design criteria that directly guide improvement on the target task.
+
+2. Concise Yet Comprehensive: Cover key evaluation dimensions without unnecessary or redundant criteria. Since scores will be normalized, too many rubrics dilute the weight of each criterion.
+
+3. Highly Discriminative: Ensure rubrics can clearly separate excellent responses from merely acceptable or poor ones, calibrated to the model's current capability level.
+
+4. Observable and Atomic: Each criterion must be verifiable with objective checks (ideally binary 0/1 scoring) rather than subjective impressions. Focus each criterion on a single aspect of quality.
+
+5. Non-Overlapping: Different criteria should measure different dimensions and not reward the same behavior repeatedly.
+
+6. Process and Outcome: Evaluate both the correctness of results and whether the reasoning process is informative and concise.
+
+
+##### Output Format #####
+Return the result as a JSON array of rubric objects with the following structure:
+
+{
+    "rubric_id": "unique_identifier",
+    "title": "Brief descriptive title",
+    "principle": "Score 1 iff [clear condition]; otherwise 0."
+}
+
+
+##### Your Turn #####
+Now generate the updated evaluation rubric. Remove criteria that are no longer discriminative, add new harder criteria targeting remaining failure modes, and keep criteria that are still useful. Output only the JSON array, no extra commentary.

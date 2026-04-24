@@ -272,7 +272,7 @@ def compute_grpo_outcome_advantage(
     epsilon: float = 1e-6,
     norm_adv_by_std_in_grpo: bool = True,
     config: Optional[AlgoConfig] = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, dict]:
     """
     Compute advantage for GRPO, operating only on Outcome reward
     (with only one scalar reward for each response).
@@ -300,6 +300,8 @@ def compute_grpo_outcome_advantage(
             shape is (bs, response_length)
         Returns: `(torch.Tensor)`
             shape is (bs, response_length)
+        grpo_stats: `(dict)`
+            dictionary containing mean and std statistics for each prompt group
     """
     scores = token_level_rewards.sum(dim=-1)
 
@@ -321,6 +323,15 @@ def compute_grpo_outcome_advantage(
                 id2std[idx] = torch.std(scores_tensor)
             else:
                 raise ValueError(f"no score in prompt index: {idx}")
+
+        # Collect statistics for logging
+        all_means = [id2mean[idx].item() for idx in id2mean]
+        all_stds = [id2std[idx].item() for idx in id2std]
+        grpo_stats = {
+            'mean_of_means': sum(all_means) / len(all_means) if all_means else 0.0,
+            'mean_of_stds': sum(all_stds) / len(all_stds) if all_stds else 0.0,
+        }
+
         for i in range(bsz):
             if norm_adv_by_std_in_grpo:
                 scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
@@ -328,7 +339,7 @@ def compute_grpo_outcome_advantage(
                 scores[i] = scores[i] - id2mean[index[i]]
         scores = scores.unsqueeze(-1) * response_mask
 
-    return scores, scores
+    return scores, scores, grpo_stats
 
 
 @register_adv_est(AdvantageEstimator.GRPO_VECTORIZED)

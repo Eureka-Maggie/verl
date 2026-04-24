@@ -265,8 +265,8 @@ def compute_score(
     reward = 1.0 if correct else -1.0
     acc = correct
 
-    print(f"[math_dapo] solution_str={solution_str!r}")
-    print(f"[math_dapo] ground_truth={ground_truth!r}")
+    #print(f"[math_dapo] solution_str={solution_str!r}")
+    #print(f"[math_dapo] ground_truth={ground_truth!r}")
     print(f"[math_dapo] pred={pred!r}, correct={correct}, reward={reward}")
 
     return {

@@ -201,6 +201,21 @@ trainer:
   #  mode: "auto", "enable", or "disable"
   use_legacy_worker_impl: disable
 
+  # Whether to enable rubric generation after rollout
+  enable_rubric_generation: false
+
+  # Rubric generation configuration (used when enable_rubric_generation is true)
+  rubric_generation:
+    template_path: rubric/init_rubric.txt
+    update_template_path: rubric/update_rubric.txt
+    judge_template_path: rubric/judge.txt
+    output_dir: rubric/
+    num_prompts: 8
+    num_rollouts_per_prompt: 2
+    num_low_var_groups: 8
+    judge_max_workers: 32
+    llm_env_path: null
+
 # profiler configs
 global_profiler:
 

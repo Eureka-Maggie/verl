@@ -1,0 +1,61 @@
+You are an expert evaluator and reward-design assistant for RL training. Your job is to generate an initial evaluation rubric for the target task.
+
+The rubric will be used to assess model responses during RL training, so it must be task-specific, discriminative, checkable, and robust. It should help distinguish truly high-quality responses from superficially plausible ones, while being calibrated to the model's current capabilities.
+
+##### RL Training Task Description #####
+DAPO-Math-17k is a math reasoning task in which the model is given a challenging mathematical problem and is expected to produce a clear, step-by-step solution that leads to the correct final answer. High-quality responses should demonstrate coherent reasoning, mathematical correctness, and a concise final answer presented in the required format.
+
+
+##### Rollout Samples #####
+[INSERT ROLLOUT SAMPLES HERE]
+
+Use these rollout samples only to identify likely failure modes, useful discriminative dimensions, and practical evaluation challenges. Do not overfit the rubric to those specific samples, and do not include candidate-specific details, solution-specific content, or answer leakage in the rubric.
+
+
+##### Rubric Design Rules #####
+
+1. Task-Specific: Design criteria that directly guide improvement on the target task.
+
+2. Concise Yet Comprehensive: Cover key evaluation dimensions without unnecessary or redundant criteria. Since scores will be normalized, too many rubrics dilute the weight of each criterion.
+
+3. Highly Discriminative: Ensure rubrics can clearly separate excellent responses from merely acceptable or poor ones, calibrated to the model's current capability level.
+
+4. Observable and Atomic: Each criterion must be verifiable with objective checks (ideally binary 0/1 scoring) rather than subjective impressions. Focus each criterion on a single aspect of quality.
+
+5. Non-Overlapping and Independent: Different criteria must measure genuinely distinct dimensions. Specifically:
+
+   (a) No prerequisite relationships: Criterion B must not logically require criterion A to be satisfied first. For example, "Format Correctness" implicitly requires both a </think> tag and a \boxed{} answer to already exist — it is a conjunction of two other criteria, not an independent one. Any rubric whose satisfaction is impossible unless another rubric is already satisfied is a hidden dependency and must be removed or merged.
+
+   (b) No conjunctive rubrics: Do not write a criterion that is the logical AND of two separately measurable properties. Split it into two independent criteria, or drop the weaker one.
+
+   (c) No asymmetric coverage: Do not allocate multiple criteria to the same behavioral cluster (e.g., three format criteria and one correctness criterion). Each distinct aspect of quality — format, reasoning process, correctness — should receive at most one criterion slot so that no single behavior cluster dominates the total score.
+
+6. Process and Outcome: Evaluate both the correctness of results and whether the reasoning process is informative and concise.
+
+
+##### Output Format #####
+Return the result in valid JSON with the following structure:
+
+{
+    "rubric_id": "unique_identifier",
+    "title": "Brief descriptive title",
+    "principle": "Score 1 iff [clear condition]; otherwise 0."
+}
+
+
+##### Output Example #####
+
+{
+    "rubric_id": "gen_001",
+    "title": "Final Answer Correctness",
+    "principle": "Score 1 iff the final answer is mathematically correct; otherwise 0."
+},
+{
+    "rubric_id": "gen_002",
+    "title": "No Unsupported Final Leap",
+    "principle": "Score 1 iff the final answer follows from the preceding derivation and is not introduced abruptly without intermediate support; otherwise 0."
+}
+
+
+##### Your Turn #####
+Now generate the evaluation rubric following the rules above, based on the task definition and the model's current performance as reflected in the rollout samples.
